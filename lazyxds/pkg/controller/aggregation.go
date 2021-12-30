@@ -18,7 +18,9 @@ import (
 	"context"
 	"fmt"
 	"github.com/aeraki-framework/aeraki/lazyxds/pkg/controller/discoveryselector"
+	"github.com/aeraki-framework/aeraki/lazyxds/pkg/controller/multicluster"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/informers"
 	"sync"
 
 	"github.com/aeraki-framework/aeraki/lazyxds/cmd/lazyxds/app/config"
@@ -55,17 +57,19 @@ type AggregationController struct {
 	KubeClient    *kubernetes.Clientset
 	istioClient   *istioclient.Clientset
 	istioInformer istioinformer.SharedInformerFactory
+	kubeInformer  informers.SharedInformerFactory
 	multiCluster  map[string]*Cluster
 
-	namespaceController *namespace.Controller
-	serviceController   *service.Controller
-	endpointsController *endpoints.Controller
+	namespaceController map[string]*namespace.Controller
+	serviceController   map[string]*service.Controller
+	endpointsController map[string]*endpoints.Controller
 
 	virtualServiceController *virtualservice.Controller
 	sidecarController        *sidecar.Controller
 	serviceEntryController   *serviceentry.Controller
 	lazyServiceController    *lazyservice.Controller
 	configMapController      *discoveryselector.Controller
+	multiClusterController   *multicluster.Controller
 
 	// all services of all k8s clusters
 	services sync.Map // format: {svcID: *model.svc}
@@ -85,13 +89,17 @@ type AggregationController struct {
 // NewController ...
 func NewController(istioClient *istioclient.Clientset, kubeClient *kubernetes.Clientset, stop <-chan struct{}) *AggregationController {
 	c := &AggregationController{
-		log:           klogr.New().WithName("AggregationController"),
-		istioClient:   istioClient,
-		KubeClient:    kubeClient,
-		istioInformer: istioinformer.NewSharedInformerFactory(istioClient, 0),
-		stop:          stop,
-		multiCluster:  make(map[string]*Cluster),
-		lazyServices:  make(map[string]*model.Service),
+		log:                 klogr.New().WithName("AggregationController"),
+		istioClient:         istioClient,
+		KubeClient:          kubeClient,
+		istioInformer:       istioinformer.NewSharedInformerFactory(istioClient, 0),
+		kubeInformer:        informers.NewSharedInformerFactory(kubeClient, 0),
+		stop:                stop,
+		multiCluster:        make(map[string]*Cluster),
+		lazyServices:        make(map[string]*model.Service),
+		namespaceController: make(map[string]*namespace.Controller),
+		serviceController:   make(map[string]*service.Controller),
+		endpointsController: make(map[string]*endpoints.Controller),
 	}
 
 	c.virtualServiceController = virtualservice.NewController(
@@ -122,6 +130,12 @@ func NewController(istioClient *istioclient.Clientset, kubeClient *kubernetes.Cl
 		c.reconcileAllNamespaces,
 	)
 
+	c.multiClusterController = multicluster.NewController(
+		c.kubeInformer.Core().V1().Secrets(),
+		c.syncCluster,
+		c.deleteCluster,
+	)
+
 	return c
 }
 
@@ -133,7 +147,7 @@ func (c *AggregationController) AddCluster(name string, client *kubernetes.Clien
 	cluster := NewCluster(name, client)
 	c.multiCluster[name] = cluster
 
-	c.namespaceController = namespace.NewController(
+	namespaceController := namespace.NewController(
 		name,
 		client.CoreV1(),
 		cluster.Informer.Core().V1().Namespaces(),
@@ -141,7 +155,7 @@ func (c *AggregationController) AddCluster(name string, client *kubernetes.Clien
 		c.deleteNamespace,
 	)
 
-	c.serviceController = service.NewController(
+	serviceController := service.NewController(
 		name,
 		client.CoreV1(),
 		cluster.Informer.Core().V1().Services(),
@@ -149,7 +163,7 @@ func (c *AggregationController) AddCluster(name string, client *kubernetes.Clien
 		c.deleteService,
 	)
 
-	c.endpointsController = endpoints.NewController(
+	endpointsController := endpoints.NewController(
 		name,
 		client.CoreV1(),
 		cluster.Informer.Core().V1().Endpoints(),
@@ -157,14 +171,18 @@ func (c *AggregationController) AddCluster(name string, client *kubernetes.Clien
 		c.deleteEndpoints,
 	)
 
+	c.namespaceController[name] = namespaceController
+	c.serviceController[name] = serviceController
+	c.endpointsController[name] = endpointsController
+
 	klog.Info("Starting Namespace controller", "cluster", name)
-	go c.namespaceController.Run(2, c.stop)
+	go namespaceController.Run(2, c.stop)
 
 	klog.Info("Starting Service controller", "cluster", name)
-	go c.serviceController.Run(4, c.stop)
+	go serviceController.Run(4, c.stop)
 
 	klog.Infof("Starting Endpoints controller", "cluster", name)
-	go c.endpointsController.Run(4, c.stop)
+	go endpointsController.Run(4, c.stop)
 
 	cluster.Informer.Start(c.stop)
 	return nil
@@ -177,7 +195,9 @@ func (c *AggregationController) Run() {
 	go c.serviceEntryController.Run(2, c.stop)
 	go c.lazyServiceController.Run(4, c.stop)
 	go c.configMapController.Run(c.stop)
+	go c.multiClusterController.Run(2, c.stop)
 
+	c.kubeInformer.Start(c.stop)
 	c.istioInformer.Start(c.stop)
 }
 
