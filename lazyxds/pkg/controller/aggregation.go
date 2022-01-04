@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/aeraki-framework/aeraki/lazyxds/pkg/controller/discoveryselector"
 	"github.com/aeraki-framework/aeraki/lazyxds/pkg/controller/multicluster"
+	"github.com/aeraki-framework/aeraki/lazyxds/pkg/utils"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"sync"
@@ -144,7 +145,8 @@ func (c *AggregationController) AddCluster(name string, client *kubernetes.Clien
 	if _, ok := c.multiCluster[name]; ok {
 		return fmt.Errorf("cluster %s already exists", name)
 	}
-	cluster := NewCluster(name, client)
+	stopCh := make(chan struct{})
+	cluster := NewCluster(name, client, stopCh)
 	c.multiCluster[name] = cluster
 
 	namespaceController := namespace.NewController(
@@ -176,15 +178,53 @@ func (c *AggregationController) AddCluster(name string, client *kubernetes.Clien
 	c.endpointsController[name] = endpointsController
 
 	klog.Info("Starting Namespace controller", "cluster", name)
-	go namespaceController.Run(2, c.stop)
+	go namespaceController.Run(2, stopCh)
 
 	klog.Info("Starting Service controller", "cluster", name)
-	go serviceController.Run(4, c.stop)
+	go serviceController.Run(4, stopCh)
 
 	klog.Infof("Starting Endpoints controller", "cluster", name)
-	go endpointsController.Run(4, c.stop)
+	go endpointsController.Run(4, stopCh)
 
-	cluster.Informer.Start(c.stop)
+	cluster.Informer.Start(stopCh)
+	return nil
+}
+
+func (c *AggregationController) DeleteCluster(name string) error {
+	cluster, ok := c.multiCluster[name]
+	if !ok {
+		klog.Infof("DeleteCluster: cluster not exists", "cluster", name)
+		return nil
+	}
+	close(cluster.stopCh)
+
+	c.services.Range(func(key, value interface{}) bool {
+		svc := value.(*model.Service)
+		if _, ok := svc.Distribution[name]; !ok {
+			return true
+		}
+		c.deleteService(context.TODO(), name, utils.FQDN(svc.Name, svc.Namespace))
+		return true
+	})
+
+	c.namespaces.Range(func(key, value interface{}) bool {
+		ns := value.(*model.Namespace)
+		if _, ok := ns.Distribution[name]; !ok {
+			return true
+		}
+		c.deleteNamespace(context.TODO(), name, ns.Name)
+		return true
+	})
+
+	c.endpoints.Range(func(key, value interface{}) bool {
+		ep := value.(*model.Endpoints)
+		if ep.Cluster == name {
+			c.deleteEndpoints(context.TODO(), ep.Name, ep.Namespace)
+		}
+		return true
+	})
+
+	delete(c.multiCluster, name)
 	return nil
 }
 

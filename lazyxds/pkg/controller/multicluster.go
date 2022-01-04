@@ -48,7 +48,7 @@ func (c *AggregationController) syncCluster(ctx context.Context, secret *corev1.
 }
 
 func (c *AggregationController) deleteCluster(ctx context.Context, clusterName string) error {
-	return nil
+	return c.DeleteCluster(clusterName)
 }
 
 func getRestConfig(kubeConfig []byte) (*rest.Config, error) {

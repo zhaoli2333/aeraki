@@ -86,7 +86,7 @@ func (c *Controller) update(oldObj, curObj interface{}) {
 }
 
 func (c *Controller) needsUpdate(old *corev1.Secret, new *corev1.Secret) bool {
-	return !reflect.DeepEqual(old.Data, new.Data) || new.GetDeletionTimestamp() != nil
+	return !reflect.DeepEqual(old.Data, new.Data) || !reflect.DeepEqual(old.Labels, new.Labels) || new.GetDeletionTimestamp() != nil
 }
 
 func (c *Controller) delete(obj interface{}) {
@@ -190,7 +190,7 @@ func (c *Controller) syncFromKey(ctx context.Context, key string) error {
 	}
 
 	if value, ok := secret.Labels[config.MultiClusterSecretLabel]; !ok || value != "true" {
-		return nil
+		return c.deleteCluster(ctx, name)
 	}
 
 	if !secret.DeletionTimestamp.IsZero() {

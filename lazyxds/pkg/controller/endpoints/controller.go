@@ -42,7 +42,7 @@ type Controller struct {
 	lister          corelisters.EndpointsLister
 	listerSynced    cache.InformerSynced
 	queue           queue.RateLimitingInterface
-	syncEndpoints   func(context.Context, *corev1.Endpoints) error
+	syncEndpoints   func(context.Context, *corev1.Endpoints, string) error
 	deleteEndpoints func(context.Context, string, string) error
 }
 
@@ -51,7 +51,7 @@ func NewController(
 	clusterName string,
 	getter v1.EndpointsGetter,
 	informer coreinformers.EndpointsInformer,
-	sync func(context.Context, *corev1.Endpoints) error,
+	sync func(context.Context, *corev1.Endpoints, string) error,
 	delete func(context.Context, string, string) error,
 ) *Controller {
 	logger := klogr.New().WithName("EndpointsController")
@@ -192,5 +192,5 @@ func (c *Controller) syncFromKey(ctx context.Context, key string) error {
 		return fmt.Errorf("unable to retrieve endpoints from store: error %w", err)
 	}
 
-	return c.syncEndpoints(ctx, endpoints)
+	return c.syncEndpoints(ctx, endpoints, c.clusterName)
 }

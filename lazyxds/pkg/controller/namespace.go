@@ -35,7 +35,7 @@ func (c *AggregationController) syncNamespace(ctx context.Context, clusterName s
 func (c *AggregationController) deleteNamespace(ctx context.Context, clusterName string, name string) (err error) {
 	logger := log.FromContext(ctx)
 
-	logger.Info("Namespace has been deleted")
+	logger.Info("Namespace has been deleted", "key", name)
 	id := name
 
 	v, ok := c.namespaces.Load(id)
